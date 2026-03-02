@@ -1,6 +1,9 @@
 const ATPROTO_STATUS_URI =
   "at://did:plc:krxbvxvis5skq7jj6eot23ul/fm.teal.alpha.actor.status/self";
-const SLACK_TOKEN = process.env.SLACK_TOKEN;
+const SLACK_TOKENS = [
+  process.env.SLACK_TOKEN,
+  process.env.SLACK_TOKEN_2,
+].filter(Boolean) as string[];
 const POLL_INTERVAL = 30_000; // 30s
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -38,7 +41,7 @@ async function fetchAtUriRecord(atUri: string): Promise<any | null> {
 type PfpState = "default" | "headphones" | "zz";
 
 let currentState: PfpState = "default";
-let lastSlackUpdate: string | null = null;
+const lastSlackUpdate = new Map<string, string>();
 
 // --- Music detection ---
 
@@ -47,7 +50,7 @@ async function checkNowPlaying(): Promise<boolean> {
     const data = await fetchAtUriRecord(ATPROTO_STATUS_URI);
     if (!data?.value?.item) return false;
     const expiry = new Date(data.value.expiry).getTime();
-    return Date.now() <= expiry;
+    return Date.now() <= expiry + 5 * 60_000;
   } catch {
     return false;
   }
@@ -74,9 +77,8 @@ function determineState(isPlaying: boolean): PfpState {
 
 // --- Slack ---
 
-async function updateSlackPfp(imagePath: string) {
-  if (!SLACK_TOKEN) return;
-  if (lastSlackUpdate === imagePath) return;
+async function updateSlackPfp(token: string, label: string, imagePath: string) {
+  if (lastSlackUpdate.get(token) === imagePath) return;
 
   const file = Bun.file(imagePath);
   const blob = await file.arrayBuffer();
@@ -86,16 +88,16 @@ async function updateSlackPfp(imagePath: string) {
 
   const res = await fetch("https://slack.com/api/users.setPhoto", {
     method: "POST",
-    headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
+    headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
 
   const data = await res.json();
   if (data.ok) {
-    lastSlackUpdate = imagePath;
-    console.log(`[slack] updated pfp to ${imagePath}`);
+    lastSlackUpdate.set(token, imagePath);
+    console.log(`[slack:${label}] updated pfp to ${imagePath}`);
   } else {
-    console.error(`[slack] failed to update pfp:`, data.error);
+    console.error(`[slack:${label}] failed to update pfp:`, data.error);
   }
 }
 
@@ -109,7 +111,11 @@ async function tick() {
 
   currentState = state;
 
-  await updateSlackPfp(imagePath);
+  await Promise.all(
+    SLACK_TOKENS.map((token, i) =>
+      updateSlackPfp(token, i === 0 ? "primary" : `workspace-${i + 1}`, imagePath)
+    )
+  );
 }
 
 tick();
